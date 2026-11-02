@@ -194,6 +194,18 @@ class Freebox:
         if item["size"] != expected_size or item["modified"] != expected_modified:
             raise FreeboxError("Fichier source modifié depuis la sélection")
 
+    def probe_download(self, encoded, expected_size):
+        """Preflight one read-only byte, detecting HTML/error pages before queuing S3 writes."""
+        with self.download(encoded) as response:
+            ctype = response.headers.get("Content-Type", "").split(";")[0].lower()
+            if response.status not in (200, 206) or ctype in ("text/html", "application/json"):
+                raise FreeboxError("Le lien API ne renvoie pas le fichier binaire attendu")
+            length = response.headers.get("Content-Length")
+            if response.status == 200 and length and int(length) != expected_size:
+                raise FreeboxError("Taille de téléchargement Freebox incorrecte")
+            if expected_size > 0 and not response.read(1):
+                raise FreeboxError("Téléchargement Freebox vide")
+
     def download(self, encoded, offset=0):
         self.allowed(encoded)
         endpoint = self.prefix + "/fs/download/" + urllib.parse.quote(encoded, safe="")
