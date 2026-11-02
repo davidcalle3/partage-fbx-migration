@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Migration Freebox · Partage</title>
+<link rel="stylesheet" href="/static/style.css">
+<script defer src="/static/app.js"></script>
+</head>
+<body>
+<main class="shell">
+  <header class="mast">
+    <div class="eyebrow"><span class="dot"></span> OUTIL TEMPORAIRE · ACCÈS PRIVÉ</div>
+    <div class="topline">
+      <div>
+        <h1>De la Freebox <em>à Partage.</em></h1>
+        <p>Choisissez ce que vous souhaitez conserver. Rien n’est supprimé de votre Freebox.</p>
+      </div>
+      <div class="connection"><span class="pulse"></span><span id="connection">Connexion…</span></div>
+    </div>
+    <div class="steps"><span class="step active">01&nbsp; Explorer</span><span class="sep"></span><span class="step">02&nbsp; Sélectionner</span><span class="sep"></span><span class="step">03&nbsp; Transférer</span></div>
+  </header>
+  <div id="message" role="status" class="notice" hidden></div>
+
+  <div class="layout">
+    <section class="panel explorer" aria-label="Explorateur Freebox">
+      <div class="section-head">
+        <div><span class="overline">SOURCE</span><h2>Freebox Révolution</h2></div>
+        <div class="source-icon">F</div>
+      </div>
+      <div class="toolbar">
+        <label for="partition">Disque</label>
+        <select id="partition"></select>
+      </div>
+      <div class="breadcrumb"><button type="button" id="back" class="back" aria-label="Dossier parent">←</button><span id="crumbs">Disque dur</span></div>
+      <div class="list-head"><span>Nom</span><span>Taille</span></div>
+      <div id="entries" class="entries"><div class="empty">Chargement des fichiers…</div></div>
+      <div class="panel-foot"><span id="entrycount">—</span><span>Lecture seule</span></div>
+    </section>
+
+    <aside class="panel selection" aria-label="Sélection et destination">
+      <div class="section-head">
+        <div><span class="overline">VOTRE SÉLECTION</span><h2>À conserver</h2></div>
+        <div class="counter" id="selected-count">0</div>
+      </div>
+      <div id="selected-list" class="selected-list"><div class="empty small">Cochez des fichiers ou dossiers dans l’explorateur.</div></div>
+      <button class="clear-link" id="clear" type="button">Effacer la sélection</button>
+      <div class="destination">
+        <span class="overline">DESTINATION</span>
+        <label class="destlabel" for="destination">Dossier dans Partage</label>
+        <select id="destination"></select>
+        <p>Les sous-dossiers seront conservés. Les fichiers existants ne seront jamais écrasés.</p>
+      </div>
+      <div id="preview-box" class="preview" hidden>
+        <span class="overline">PRÊT À MIGRER</span>
+        <div class="preview-stats"><strong id="preview-count">—</strong><strong id="preview-size">—</strong></div>
+        <div class="preview-captions"><span>fichiers</span><span>à transférer</span></div>
+        <p id="preview-folders" class="subtle"></p>
+        <div id="preview-examples" class="examples"></div>
+      </div>
+      <div class="actions">
+        <button class="btn secondary" id="preview" type="button" disabled>Calculer la sélection</button>
+        <button class="btn primary" id="queue" type="button" disabled>Lancer les transferts <span>→</span></button>
+      </div>
+    </aside>
+  </div>
+
+  <section class="panel transfers" aria-label="Transferts">
+    <div class="section-head">
+      <div><span class="overline">SUIVI</span><h2>Transferts vers S3</h2></div>
+      <button class="refresh" type="button" id="refresh">↻ Actualiser</button>
+    </div>
+    <div class="transfer-summary" id="transfer-summary">Aucun transfert pour le moment.</div>
+    <div id="jobs" class="jobs"><div class="empty small">Les transferts apparaîtront ici après confirmation.</div></div>
+  </section>
+
+  <footer>
+    <span>Partage Migration</span>
+    <span>Freebox → VPS → S3 · Aucun fichier local permanent</span>
+  </footer>
+</main>
+</body>
+</html>
