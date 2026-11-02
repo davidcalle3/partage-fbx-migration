@@ -254,6 +254,9 @@ class State:
     def queue(self, jobs):
         with transaction(self.path) as con:
             for j in jobs:
+                for old in con.execute("SELECT name FROM jobs WHERE folder_id=?", (j["folder_id"],)):
+                    if old["name"].casefold() == j["name"].casefold():
+                        raise ValueError("Ce fichier est déjà dans la file de migration : " + j["name"])
                 con.execute("""INSERT INTO jobs
                     (id,stored_name,source,name,size,modified,folder_id,state,created_at,updated_at)
                     VALUES (?,?,?,?,?,?,?,'queued',?,?)""",
@@ -450,14 +453,18 @@ class Worker:
         return bytes(result)
 
     def transfer(self, job):
-        self.freebox.verify_file(job["source"], job["size"], json.loads(job["modified"]))
         key = self.partage.key(job)
         s3 = self.partage.s3
         bucket = self.partage.bucket
-        # Crash after multipart completion but before SQLite publication.
-        if self.partage.head_size(job) == job["size"]:
+        # Crash after multipart completion but before SQLite publication:
+        # a completed object remains publishable even if Freebox has been retired.
+        existing_size = self.partage.head_size(job)
+        if existing_size == job["size"]:
             self.partage.publish(job)
             return
+        if existing_size is not None:
+            raise ValueError("Objet S3 inattendu : copie non réécrite")
+        self.freebox.verify_file(job["source"], job["size"], json.loads(job["modified"]))
         if job["size"] == 0:
             s3.put_object(Bucket=bucket, Key=key, Body=b"")
             self.partage.publish(job)
