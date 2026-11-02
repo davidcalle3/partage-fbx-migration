@@ -69,6 +69,7 @@ class Freebox:
         self._opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=tls), _NoRedirect())
         self._lock = threading.RLock()
         self._token = None
+        self._root_cache = None
         version = self._json("/api_version", authenticated=False)
         if version.get("uid") != EXPECTED_UID:
             raise FreeboxError("UID Freebox inattendu ; connexion refusée")
@@ -93,7 +94,7 @@ class Freebox:
             exc.close()
             raise FreeboxError("Freebox : " + code) from None
 
-    def _json(self, endpoint, body=None, authenticated=True):
+    def _json(self, endpoint, body=None, authenticated=True, allow_retry=True):
         with self._lock:
             headers = {}
             if body is not None:
@@ -117,10 +118,10 @@ class Freebox:
                 except (ValueError, UnicodeError):
                     error = "HTTP " + str(exc.code)
                 exc.close()
-                if authenticated and error == "auth_required":
+                if authenticated and allow_retry and error == "auth_required":
                     self._token = None
                     self._login()
-                    return self._json(endpoint, body, authenticated)
+                    return self._json(endpoint, body, authenticated, allow_retry=False)
                 raise FreeboxError("Freebox : " + error) from None
             if endpoint == "/api_version":
                 return reply
@@ -150,8 +151,9 @@ class Freebox:
 
     def allowed(self, encoded):
         path = decode_path(encoded)
-        roots = [decode_path(p["path"]) for p in self.partitions()]
-        if not any(path == root or path.startswith(root + "/") for root in roots):
+        if self._root_cache is None:
+            self._root_cache = [decode_path(p["path"]) for p in self.partitions()]
+        if not any(path == root or path.startswith(root + "/") for root in self._root_cache):
             raise ValueError("Chemin hors des disques montés")
         return path
 
