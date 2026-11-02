@@ -13,10 +13,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-HOST = os.environ.get("FREEBOX_HOST", "https://b50xzsc1.fbxos.fr:56055").rstrip("/")
-APP_ID = "fr.partage.migration"
 ROOT = Path(os.environ.get("FREEBOX_SECRET_DIR", str(Path.home() / "partage-freebox-migration")))
-EXPECTED_UID = "a1cb81bbd91049f153507557a6cc5d55"
+config_path = ROOT / "config.json"
+config = json.loads(config_path.read_text()) if config_path.exists() else {}
+HOST = os.environ.get("FREEBOX_HOST", config.get("host", "")).rstrip("/")
+EXPECTED_UID = os.environ.get("FREEBOX_UID", config.get("uid", ""))
+APP_ID = "fr.partage.migration"
 
 
 class FreeboxError(RuntimeError):
