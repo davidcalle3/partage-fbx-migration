@@ -269,6 +269,19 @@ class State:
                 """SELECT id,name,size,transferred,state,error,updated_at
                    FROM jobs ORDER BY created_at,id DESC LIMIT 500""")]
 
+    def stats(self):
+        with db(self.path) as con:
+            row = con.execute("""SELECT
+                COUNT(*) AS count,
+                COALESCE(SUM(size),0) AS bytes,
+                COALESCE(SUM(MIN(transferred,size)),0) AS transferred,
+                COALESCE(SUM(CASE WHEN state='done' THEN 1 ELSE 0 END),0) AS done,
+                COALESCE(SUM(CASE WHEN state='queued' THEN 1 ELSE 0 END),0) AS queued,
+                COALESCE(SUM(CASE WHEN state='running' THEN 1 ELSE 0 END),0) AS running,
+                COALESCE(SUM(CASE WHEN state='error' THEN 1 ELSE 0 END),0) AS error
+                FROM jobs""").fetchone()
+            return dict(row)
+
     def next_job(self):
         with transaction(self.path) as con:
             row = con.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY created_at,id LIMIT 1").fetchone()
