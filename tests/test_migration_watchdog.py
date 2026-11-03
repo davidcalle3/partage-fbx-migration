@@ -93,7 +93,7 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(watchdog.main([]), 0)
         self.assertEqual(watchdog.main([]), 0)
         self.assertEqual(watchdog.main([]), 0)
-        self.assertEqual(run.call_count, 1 + 3)  # is-active checks + 3 restarts
+        self.assertEqual(run.call_count, 4 + 3)  # four is-active checks + 3 restarts
 
     @patch.object(watchdog, "stalled_jobs")
     @patch.object(watchdog.subprocess, "run")
