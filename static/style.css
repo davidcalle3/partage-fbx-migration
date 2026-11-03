@@ -64,7 +64,9 @@ select{min-width:0;width:100%;background:#f9fbfb;border:1px solid var(--line);bo
 .btn.primary{display:flex;justify-content:space-between;align-items:center;padding:0 17px;background:var(--teal);color:white;border-color:var(--teal)}
 .btn.primary:not(:disabled):hover{background:var(--teal-dark)}
 .transfers{margin-top:22px}
-.refresh{background:transparent;color:var(--teal);font-size:12px;border:0}
+.transfer-tools{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.refresh{background:transparent;color:var(--teal);font-size:12px;border:0;text-decoration:none}
+a.refresh:hover{text-decoration:underline}
 .transfer-summary{margin:0 27px 11px;background:#f3f8f7;border-radius:8px;padding:14px;color:#507a77;font-size:12px}
 .jobs{padding:0 27px 24px;max-height:500px;overflow:auto}
 .job{padding:15px 0;border-bottom:1px solid #eaf0ef;display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px 18px}
