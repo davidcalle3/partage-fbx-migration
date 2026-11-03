@@ -1,5 +1,5 @@
 [Unit]
-Description=Temporary Freebox to Partage S3 migration (SSH tunnel only)
+Description=Temporary authenticated Freebox-to-Partage migration (local behind HTTPS proxy)
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
