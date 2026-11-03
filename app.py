@@ -72,6 +72,18 @@ class QueueRequest(BaseModel):
     plan_id: str
 
 
+class SavedItem(BaseModel):
+    path: str = Field(min_length=1,max_length=8192)
+    name: str = Field(min_length=1,max_length=180)
+    type: str
+    size: int | None = None
+
+
+class SavedSelection(BaseModel):
+    items: list[SavedItem] = Field(max_length=200)
+    target: str
+
+
 class JobAction(BaseModel):
     action: str
 
@@ -108,6 +120,25 @@ def ls(path: str = Query(min_length=1, max_length=8192)):
         fail(exc)
 
 
+@app.get("/api/selection")
+def saved_selection():
+    return runtime["state"].selection()
+
+
+@app.post("/api/selection")
+def save_selection(body: SavedSelection, x_migration_token: str | None = Header(None)):
+    guard(x_migration_token)
+    try:
+        if body.target not in {row["id"] for row in runtime["partage"].destinations()}:
+            raise ValueError("Destination inconnue")
+        for item in body.items:
+            runtime["freebox"].allowed(item.path)
+        runtime["state"].save_selection([x.model_dump() for x in body.items], body.target)
+        return {"ok":True}
+    except Exception as exc:
+        fail(exc)
+
+
 @app.post("/api/preview")
 def preview(body: Selection, x_migration_token: str | None = Header(None)):
     guard(x_migration_token)
@@ -133,9 +164,12 @@ def queue(body: QueueRequest, x_migration_token: str | None = Header(None)):
     guard(x_migration_token)
     try:
         manifest, target = runtime["state"].take_plan(body.plan_id)
-        mapped = runtime["partage"].prepare(manifest, target)
+        mapped, skipped = runtime["partage"].prepare(
+            manifest, target, runtime["state"].known())
         runtime["state"].queue(mapped)
-        return {"queued": len(mapped)}
+        # Selection is cleared only after durable queue creation.
+        runtime["state"].save_selection([], target)
+        return {"queued": len(mapped), "skipped": skipped}
     except Exception as exc:
         fail(exc)
 
