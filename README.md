@@ -217,6 +217,55 @@ L'interface reste disponible **uniquement par le tunnel SSH**. Le service n'éco
 systemctl --user disable --now partage-fbx-migration.service
 ```
 
+### Watchdog de progression (migration longue)
+
+Un contrôle indépendant consulte chaque minute la base privée de migration en
+**lecture seule**. Si un job est `running` sans nouveau checkpoint S3 depuis
+**10 minutes**, il redémarre uniquement `partage-fbx-migration.service`.
+La progression est checkpointée par blocs de 8 Mio : en cas de redémarrage,
+les parties S3 terminées sont conservées. L'application web peut rester
+disponible même si le worker est bloqué, d'où ce contrôle par les octets
+enregistrés plutôt que par `/health`.
+
+Le watchdog n'intervient pas sur les tâches en pause, en erreur, en attente,
+terminées, ni si le service principal a été volontairement arrêté.
+Un transfert extrêmement lent (plus de 10 minutes pour finir une partie
+de 8 Mio) peut provoquer un redémarrage prématuré.
+
+Installation **sur le VPS en tant que `ubuntu`**, après mise à jour du dépôt :
+
+```sh
+cd ~/partage-fbx-migration
+git pull --ff-only
+.venv/bin/python -m unittest discover -s tests -v
+mkdir -p ~/.config/systemd/user
+cp deploy/partage-fbx-watchdog.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now partage-fbx-watchdog.timer
+systemctl --user list-timers --all | grep partage-fbx-watchdog
+```
+
+Vérification manuelle sans redémarrage :
+
+```sh
+python3 ~/partage-fbx-migration/deploy/migration_watchdog.py --dry-run
+```
+
+Historique des détections et redémarrages :
+
+```sh
+journalctl --user -u partage-fbx-watchdog.service --since today --no-pager
+```
+
+Désactiver le timer après la migration :
+
+```sh
+systemctl --user disable --now partage-fbx-watchdog.timer
+```
+
+Si `FREEBOX_SECRET_DIR` a été personnalisé pour le service principal,
+configurer la même variable dans l'unité watchdog avant activation.
+
 ### Limites et sécurité
 
 - Outil ponctuel à **un seul serveur et un seul worker**. Lancer exactement un worker Uvicorn.
