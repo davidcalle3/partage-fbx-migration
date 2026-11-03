@@ -142,7 +142,7 @@ def queue(body: QueueRequest, x_migration_token: str | None = Header(None)):
 
 @app.get("/api/jobs")
 def jobs():
-    return {"jobs": runtime["state"].jobs()}
+    return {"jobs": runtime["state"].jobs(), "stats": runtime["state"].stats()}
 
 
 @app.post("/api/jobs/{job_id}/action")
