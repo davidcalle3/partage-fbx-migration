@@ -117,6 +117,9 @@ def preview(body: Selection, x_migration_token: str | None = Header(None)):
         if not destination:
             raise ValueError("Destination Partage introuvable")
         manifest = manifest_from_selection(runtime["freebox"], body.paths)
+        if manifest["files"]:
+            first = manifest["files"][0]
+            runtime["freebox"].probe_download(first["source"], first["size"])
         pid = runtime["state"].plan(manifest, body.target)
         return {"plan_id":pid, "files":len(manifest["files"]),
                 "folders":len(manifest["folders"]), "bytes":manifest["bytes"],
