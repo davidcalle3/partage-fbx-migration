@@ -1,7 +1,11 @@
 """Durable migration plans, Partage catalog adapter, and streaming S3 worker."""
 import contextlib
 import datetime
+import errno
 import fcntl
+import http.client
+import socket
+import urllib.error
 import json
 import logging
 import mimetypes
@@ -16,6 +20,9 @@ import uuid
 from pathlib import Path
 
 from botocore.client import Config
+from botocore.exceptions import (ClientError, ConnectionClosedError,
+                                EndpointConnectionError, ReadTimeoutError,
+                                ConnectTimeoutError)
 import boto3
 from dotenv import dotenv_values
 
@@ -471,6 +478,30 @@ def manifest_from_selection(freebox, paths):
     return manifest
 
 
+def transient_network_error(exc):
+    """Retry genuine connection failures; don't loop on bad data or credentials."""
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError,
+                        http.client.IncompleteRead, http.client.RemoteDisconnected,
+                        ReadTimeoutError, ConnectTimeoutError, EndpointConnectionError,
+                        ConnectionClosedError)):
+        return True
+    if isinstance(exc, OSError) and exc.errno in (
+            errno.ETIMEDOUT, errno.ECONNREFUSED, errno.ECONNRESET,
+            errno.ECONNABORTED, errno.ENETUNREACH, errno.EHOSTUNREACH,
+            errno.EPIPE):
+        return True
+    if isinstance(exc, ClientError):
+        status=exc.response.get("ResponseMetadata",{}).get("HTTPStatusCode")
+        code=exc.response.get("Error",{}).get("Code","")
+        return status in (408,429,500,502,503,504) or code in (
+            "RequestTimeout","SlowDown","ServiceUnavailable","InternalError")
+    if isinstance(exc, FreeboxError):
+        message=str(exc)
+        return any(code in message for code in ("HTTP 408","HTTP 429","HTTP 500",
+                                                "HTTP 502","HTTP 503","HTTP 504"))
+    return False
+
+
 class Worker:
     """One local worker. S3 multipart checkpoints survive app and VPS restarts."""
     def __init__(self, freebox, partage, state):
@@ -495,6 +526,11 @@ class Worker:
         self.stop.set()
         if self._thread:
             self._thread.join(timeout=90)
+        if self._thread and self._thread.is_alive():
+            # A blocked network read may outlast graceful shutdown. Keep the
+            # process-wide lock held until the OS actually exits.
+            LOG.warning("Migration worker still stopping; retaining exclusive lock")
+            return
         if self._lock_file is not None:
             fcntl.flock(self._lock_file, fcntl.LOCK_UN)
             os.close(self._lock_file)
@@ -628,5 +664,10 @@ class Worker:
                 # Do not include URLs, secrets, Freebox tokens or S3 request details in UI.
                 LOG.exception("Transfer failed for job %s", job["id"])
                 if self.state.job(job["id"])["state"] == "running":
-                    safe = str(exc) if isinstance(exc,(ValueError,FreeboxError)) else "Erreur réseau ou S3 ; réessayer"
-                    self.state.set(job["id"], state="error", error=safe[:180])
+                    if transient_network_error(exc):
+                        # Retry forever (backoff capped at five minutes) until
+                        # connectivity returns or the user explicitly pauses.
+                        self.state.retry_later(job["id"], "Connexion indisponible ; reprise automatique")
+                    else:
+                        safe = str(exc) if isinstance(exc,(ValueError,FreeboxError)) else "Échec non réseau ; intervention nécessaire"
+                        self.state.set(job["id"], state="error", error=safe[:180])
