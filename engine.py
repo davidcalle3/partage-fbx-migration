@@ -269,6 +269,11 @@ class State:
                     id INTEGER PRIMARY KEY CHECK(id=1),
                     selection_json TEXT NOT NULL, destination TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS transfer_activity (
+                    job_id TEXT PRIMARY KEY, phase TEXT NOT NULL,
+                    source_bytes INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
             """)
             columns = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}
             if "attempts" not in columns:
@@ -366,8 +371,13 @@ class State:
             row = con.execute("""SELECT * FROM jobs WHERE state='queued'
                 AND retry_at<=? ORDER BY created_at,id LIMIT 1""",(time.time(),)).fetchone()
             if row:
+                started = now()
                 con.execute("UPDATE jobs SET state='running',error=NULL,updated_at=? WHERE id=?",
-                            (now(),row["id"]))
+                            (started,row["id"]))
+                con.execute("""INSERT INTO transfer_activity(job_id,phase,source_bytes,updated_at)
+                    VALUES(?,'starting',0,?) ON CONFLICT(job_id) DO UPDATE SET
+                    phase='starting',source_bytes=0,updated_at=excluded.updated_at""",
+                    (row["id"],started))
             return dict(row) if row else None
 
     def job(self, jid):
@@ -393,6 +403,20 @@ class State:
             con.execute("INSERT OR REPLACE INTO parts VALUES (?,?,?,?)", (jid, number, etag, size))
             transferred = con.execute("SELECT COALESCE(SUM(size),0) FROM parts WHERE job_id=?",(jid,)).fetchone()[0]
             con.execute("UPDATE jobs SET transferred=?,updated_at=? WHERE id=?",(transferred,now(),jid))
+
+    def activity(self, jid, phase, source_bytes=0):
+        """Actual worker activity, independent of durable S3 checkpoint progress.
+
+        Writes are throttled by Worker; never refresh during a blocked read.
+        """
+        if not phase or source_bytes < 0:
+            raise ValueError("Activité de transfert invalide")
+        with transaction(self.path) as con:
+            con.execute("""INSERT INTO transfer_activity(job_id,phase,source_bytes,updated_at)
+                VALUES(?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET
+                phase=excluded.phase,source_bytes=excluded.source_bytes,
+                updated_at=excluded.updated_at""",
+                (jid,phase,int(source_bytes),now()))
 
     def retry_later(self, jid, message):
         with transaction(self.path) as con:
@@ -546,14 +570,19 @@ class Worker:
             self._lock_file = None
 
     @staticmethod
-    def _skip(body, count):
-        while count:
-            block = body.read(min(count, 1024*1024))
+    def _skip(body, count, on_progress=None):
+        remaining = count
+        # read1 returns available socket data instead of waiting to fill 1 MiB.
+        reader = getattr(body, "read1", body.read)
+        while remaining:
+            block = reader(min(remaining, 1024*1024))
             if not block:
                 raise ValueError("Flux Freebox interrompu avant la reprise")
-            count -= len(block)
+            remaining -= len(block)
+            if on_progress:
+                on_progress(count - remaining)
 
-    def _open_source(self, job, offset):
+    def _open_source(self, job, offset, on_skip=None):
         source = self.freebox.download(job["source"], offset)
         status = source.status
         content_type = source.headers.get("Content-Type", "").split(";")[0].lower()
@@ -561,6 +590,7 @@ class Worker:
             source.close()
             raise FreeboxError("Téléchargement Freebox renvoie une page, pas des octets")
         if status == 206:
+            LOG.info("Job %s: Freebox HTTP 206; direct byte-range resume at %s", job["id"], offset)
             m = re.match(r"bytes (\d+)-(\d+)/(\d+)", source.headers.get("Content-Range",""))
             if not m or int(m.group(1)) != offset or int(m.group(3)) != job["size"]:
                 source.close()
@@ -571,23 +601,38 @@ class Worker:
                 source.close()
                 raise FreeboxError("Longueur Freebox inattendue")
             if offset:
-                self._skip(source, offset)  # Freebox that ignores Range: one sequential redownload
+                LOG.warning("Job %s: Freebox HTTP 200 ignored Range; replaying %s bytes before new data",
+                            job["id"], offset)
+                self._skip(source, offset, on_progress=on_skip)
         else:
             source.close()
             raise FreeboxError("Statut téléchargement Freebox inattendu")
         return source
 
     @staticmethod
-    def _read_exact(source, size):
+    def _read_exact(source, size, on_progress=None):
         result = bytearray()
+        reader = getattr(source, "read1", source.read)
         while len(result) < size:
-            chunk = source.read(min(1024*1024, size-len(result)))
+            chunk = reader(min(1024*1024, size-len(result)))
             if not chunk:
                 raise ValueError("Fichier source interrompu avant la fin")
             result.extend(chunk)
+            if on_progress:
+                on_progress(len(chunk))
         return bytes(result)
 
     def transfer(self, job):
+        # Count actual source reads, including discarded bytes when a Freebox
+        # server ignores Range. S3 checkpoint progress alone is insufficient.
+        last_activity = [0.0]
+        def mark(phase, source_bytes=0, force=False):
+            moment = time.monotonic()
+            if force or moment - last_activity[0] >= 5:
+                self.state.activity(job["id"], phase, source_bytes)
+                last_activity[0] = moment
+
+        mark("preparing", force=True)
         key = self.partage.key(job)
         s3 = self.partage.s3
         bucket = self.partage.bucket
@@ -605,11 +650,19 @@ class Worker:
             self.partage.publish(job)
             return
         if job["size"] <= CHUNK:
+            mark("opening-freebox", force=True)
             with self._open_source(job, 0) as src:
-                payload = self._read_exact(src, job["size"])
+                mark("reading", force=True)
+                read_so_far = [0]
+                def small_read(n):
+                    read_so_far[0] += n
+                    mark("reading", read_so_far[0])
+                payload = self._read_exact(src, job["size"], on_progress=small_read)
                 if src.read(1):
                     raise ValueError("Données source plus grandes que prévu")
+            mark("uploading-s3", job["size"], force=True)
             s3.put_object(Bucket=bucket, Key=key, Body=payload)
+            mark("publishing", job["size"], force=True)
             self.partage.publish(job)
             return
 
@@ -619,6 +672,7 @@ class Worker:
                 ContentType=mimetypes.guess_type(job["name"])[0] or "application/octet-stream")
             upload_id = result["UploadId"]
             self.state.set(job["id"], upload_id=upload_id)
+        mark("checking-s3", force=True)
         remote = s3.list_parts(Bucket=bucket, Key=key, UploadId=upload_id)
         parts = list(remote.get("Parts", []))
         marker = remote.get("NextPartNumberMarker")
@@ -636,23 +690,35 @@ class Worker:
             self.state.part(job["id"],number,p["ETag"],size)
             offset += size
         if offset < job["size"]:
-            with self._open_source(job, offset) as src:
+            mark("opening-freebox", offset, force=True)
+            with self._open_source(job, offset,
+                                   on_skip=lambda n: mark("replaying", n)) as src:
+                mark("reading", offset, force=True)
                 while offset < job["size"]:
                     if self.stop.is_set() or self.state.job(job["id"])["state"] == "paused":
                         return
                     count = min(CHUNK, job["size"]-offset)
-                    payload = self._read_exact(src, count)
+                    read_so_far = [0]
+                    def on_read(n):
+                        read_so_far[0] += n
+                        mark("reading", offset + read_so_far[0])
+                    payload = self._read_exact(src, count, on_progress=on_read)
                     number = len(ordered)+1
+                    mark("uploading-s3", offset + count, force=True)
                     etag = s3.upload_part(Bucket=bucket, Key=key, UploadId=upload_id,
                                           PartNumber=number, Body=payload,
                                           ContentLength=count)["ETag"]
                     ordered.append({"PartNumber":number, "ETag":etag})
                     self.state.part(job["id"], number, etag, count)
                     offset += count
+                    mark("checkpointed", offset, force=True)
+                    LOG.info("Job %s: S3 checkpoint at %s / %s bytes",
+                             job["id"], offset, job["size"])
                 if src.read(1):
                     raise ValueError("Données source supplémentaires")
         if self.stop.is_set() or self.state.job(job["id"])["state"] == "paused":
             return
+        mark("finalizing", job["size"], force=True)
         self.freebox.verify_file(job["source"], job["size"], json.loads(job["modified"]))
         s3.complete_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id,
                                      MultipartUpload={"Parts":ordered})
