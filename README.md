@@ -46,7 +46,29 @@ relancer la commande Uvicorn habituelle. **Ne pas lancer deux instances**.
 
 ### 2. Connecter le chemin à l'HTTPS existant
 
-**Nginx** : ajouter les deux blocs `location` de
+**Ton VPS utilise Nginx**, avec le site Partage dans
+`/etc/nginx/sites-available/partage`. Une commande idempotente permet
+d'ajouter la route automatiquement, **après** vérification que le service
+répond HTTP 401 avec un défi d'authentification, pour ne jamais l'exposer
+accidentellement sans mot de passe :
+
+```sh
+sudo python3 ~/partage-fbx-migration/deploy/manage_nginx.py --apply
+```
+
+L'installateur cible uniquement l'unique bloc HTTPS du site, enregistre
+une sauvegarde `partage.pre-fbx-...`, valide la configuration Nginx, puis
+la recharge. En cas d'échec de validation ou de rechargement, il remet
+la configuration d'origine. Il refuse d'intervenir si l'application
+n'est pas protégée, ou si le site comporte plusieurs blocs HTTPS ambigus.
+
+Pour retirer la route après migration :
+
+```sh
+sudo python3 ~/partage-fbx-migration/deploy/manage_nginx.py --remove
+```
+
+**Modification manuelle (alternative)** : ajouter les deux blocs `location` de
 `deploy/nginx-https-location.conf` **à l'intérieur du bloc server qui écoute
 déjà sur 443 pour Partage**, sans modifier le bloc sur 80 ni les certificats.
 La directive `proxy_pass http://127.0.0.1:8791/;`, avec son slash final,
