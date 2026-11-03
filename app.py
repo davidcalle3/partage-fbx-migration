@@ -192,15 +192,19 @@ def export_report():
     writer.writerow(["identifiant","source_freebox","nom","dossier_partage_id",
                      "taille_octets","envoyes_octets","etat","tentatives",
                      "erreur","cree","modifie"])
+    def safe_csv(value):
+        value=str(value if value is not None else "")
+        return "'" + value if value.lstrip().startswith(("=","+","-","@")) else value
+
     for job in runtime["state"].report():
         try:
             source=decode_path(job["source"])
         except ValueError:
             source="[chemin invalide]"
         # These are private filenames, never publish this endpoint to the internet.
-        writer.writerow([job["id"],source,job["name"],job["folder_id"],
+        writer.writerow([job["id"],safe_csv(source),safe_csv(job["name"]),job["folder_id"],
                          job["size"],job["transferred"],job["state"],
-                         job["attempts"],job["error"] or "",
+                         job["attempts"],safe_csv(job["error"]),
                          job["created_at"],job["updated_at"]])
     return Response(buffer.getvalue(),media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition":
