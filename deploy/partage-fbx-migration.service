@@ -1,0 +1,20 @@
+[Unit]
+Description=Temporary Freebox to Partage S3 migration (SSH tunnel only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/partage-fbx-migration
+# Point this to the existing Partage .env; NEVER copy or edit that .env.
+Environment=PARTAGE_ENV_FILE=/opt/partage/.env
+ExecStart=/home/ubuntu/partage-fbx-migration/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8791 --workers 1
+Restart=always
+RestartSec=15
+StartLimitIntervalSec=0
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
