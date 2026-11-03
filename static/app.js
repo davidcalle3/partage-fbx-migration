@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = {csrf:"", partitions:[], destinations:[], stack:[], selection:new Map(), preview:null, busy:false, listing:0};
+const state = {csrf:"", partitions:[], destinations:[], stack:[], selection:new Map(), preview:null, busy:false, listing:0, rates:new Map()};
 const fmt = (size) => {
   if (!size) return "0 o";
   const units = ["o","Kio","Mio","Gio","Tio"];
@@ -211,11 +211,15 @@ function renderJobs(data) {
   const errors = all.filter(j=>j.state === "error");
   const active = all.filter(j=>j.state === "running");
   const queued = all.filter(j=>j.state === "queued");
-  const total = all.reduce((n,j)=>n+j.size,0);
-  const complete = all.reduce((n,j)=>n+Math.min(j.transferred,j.size),0);
-  summary.textContent = all.length ? all.length + " fichiers · " + fmt(complete) + " / " + fmt(total) +
-    " · " + done.length + " terminés · " + active.length + " en cours · " + queued.length +
-    " en attente" + (errors.length ? " · " + errors.length + " erreurs" : "") :
+  const stats = data.stats || {};
+  const count = stats.count === undefined ? all.length : stats.count;
+  const total = stats.bytes === undefined ? all.reduce((n,j)=>n+j.size,0) : stats.bytes;
+  const complete = stats.transferred === undefined ? all.reduce((n,j)=>n+Math.min(j.transferred,j.size),0) : stats.transferred;
+  summary.textContent = count ? count + " fichiers · " + fmt(complete) + " / " + fmt(total) +
+    " · " + (stats.done === undefined ? done.length : stats.done) + " terminés · " +
+    (stats.running === undefined ? active.length : stats.running) + " en cours · " +
+    (stats.queued === undefined ? queued.length : stats.queued) + " en attente" +
+    ((stats.error || errors.length) ? " · " + (stats.error === undefined ? errors.length : stats.error) + " erreurs" : "") :
     "Aucun transfert pour le moment.";
   jobs.replaceChildren();
   if (!all.length) jobs.append(node("div","empty small","Les transferts apparaîtront ici après confirmation."));
@@ -223,7 +227,26 @@ function renderJobs(data) {
     const el = node("div","job");
     const head = node("div","");
     head.append(node("div","job-head",job.name));
-    head.append(node("div","job-meta",fmt(job.transferred) + " / " + fmt(job.size)));
+    let detail = fmt(job.transferred) + " / " + fmt(job.size);
+    const tick = Date.now();
+    const previous = state.rates.get(job.id);
+    if (job.state === "running" && previous && job.transferred > previous.bytes) {
+      const seconds = (tick - previous.time) / 1000;
+      if (seconds > 0) {
+        const speed = (job.transferred - previous.bytes) / seconds;
+        if (speed > 0) {
+          const eta = Math.ceil((job.size - job.transferred) / speed);
+          detail += " · " + fmt(speed) + "/s";
+          if (eta > 0 && Number.isFinite(eta)) {
+            detail += " · env. " + (eta < 3600 ? Math.ceil(eta/60) + " min" : (eta/3600).toFixed(1) + " h");
+          }
+        }
+      }
+    }
+    if (!previous || previous.bytes !== job.transferred) {
+      state.rates.set(job.id,{bytes:job.transferred,time:tick});
+    }
+    head.append(node("div","job-meta",detail));
     el.append(head,node("span","status " + job.state,statusName(job.state)));
     const progress = node("div","progress");
     const bar = node("div");
