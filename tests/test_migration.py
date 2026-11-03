@@ -3,9 +3,11 @@ import json
 import sqlite3
 import tempfile
 import unittest
+import threading
+import urllib.parse
 from pathlib import Path
 
-from freebox import decode_path, encode_path
+from freebox import Freebox, decode_path, encode_path
 from engine import Partage, State, Worker, manifest_from_selection
 
 
@@ -48,6 +50,46 @@ class Paths(unittest.TestCase):
             decode_path(encode_path("/Disque dur/../private"))
         with self.assertRaises(ValueError):
             decode_path("%%%")
+
+
+
+class DownloadEndpoint(unittest.TestCase):
+    def test_file_download_uses_dl_not_fs_download(self):
+        client = Freebox.__new__(Freebox)
+        client.prefix = "/api/v16"
+        client._lock = threading.RLock()
+        client._token = "fake-session"
+        calls = []
+
+        def capture(endpoint, token=None, headers=None, timeout=75):
+            calls.append((endpoint, token, headers))
+            return "binary stream"
+
+        client.allowed = lambda path: "/Disque dur/Photos/photo.jpg"
+        client._open = capture
+        path = encode_path("/Disque dur/Photos/photo.jpg")
+        self.assertEqual(client.download(path), "binary stream")
+        self.assertEqual(calls, [(
+            "/api/v16/dl/" + urllib.parse.quote(path, safe=""),
+            "fake-session",
+            None
+        )])
+
+    def test_resume_download_adds_byte_range(self):
+        client = Freebox.__new__(Freebox)
+        client.prefix = "/api/v16"
+        client._lock = threading.RLock()
+        client._token = "fake-session"
+        calls = []
+        client.allowed = lambda path: "/Disque dur/Photos/photo.jpg"
+        client._open = lambda endpoint, token=None, headers=None: calls.append(
+            (endpoint, token, headers)
+        ) or "stream"
+        encoded = encode_path("/Disque dur/Photos/photo.jpg")
+        self.assertEqual(client.download(encoded, 4096), "stream")
+        self.assertEqual(calls[0][0], "/api/v16/dl/" + urllib.parse.quote(encoded, safe=""))
+        self.assertEqual(calls[0][2], {"Range": "bytes=4096-"})
+
 
 
 class Plans(unittest.TestCase):
