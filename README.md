@@ -219,52 +219,73 @@ systemctl --user disable --now partage-fbx-migration.service
 
 ### Watchdog de progression (migration longue)
 
-Un contrôle indépendant consulte chaque minute la base privée de migration en
-**lecture seule**. Si un job est `running` sans nouveau checkpoint S3 depuis
-**10 minutes**, il redémarre uniquement `partage-fbx-migration.service`.
-La progression est checkpointée par blocs de 8 Mio : en cas de redémarrage,
-les parties S3 terminées sont conservées. L'application web peut rester
-disponible même si le worker est bloqué, d'où ce contrôle par les octets
-enregistrés plutôt que par `/health`.
+Le premier watchdog ne mesurait que les blocs **déjà publiés dans S3** :
+une relecture légitime d'octets Freebox, nécessaire lorsque la Freebox ignore
+`Range`, apparaissait à tort comme une panne et provoquait une boucle de
+redémarrages. La version corrigée suit désormais l'activité réelle du worker
+en SQLite (table `transfer_activity`) : octets effectivement lus depuis
+la Freebox, y compris pendant la relecture des octets existants, et phase
+(`replaying`, `reading`, `uploading-s3`, etc.). Les écritures d'activité
+sont espacées d'au moins 5 secondes, hors transitions de phase.
 
-Le watchdog n'intervient pas sur les tâches en pause, en erreur, en attente,
-terminées, ni si le service principal a été volontairement arrêté.
-Un transfert extrêmement lent (plus de 10 minutes pour finir une partie
-de 8 Mio) peut provoquer un redémarrage prématuré.
+Le timer vérifie chaque minute. Il redémarre le service seulement si un job
+`running` ne signale aucune activité pendant **10 minutes**. Pour éviter une
+boucle infinie, **trois redémarrages consécutifs sans nouveau checkpoint S3**
+sont permis pour un même fichier : ensuite il affiche une erreur explicite
+dans le journal et laisse le service actif pour investigation. Un nouveau
+checkpoint S3 autorise de nouveau trois tentatives.
 
-Installation **sur le VPS en tant que `ubuntu`**, après mise à jour du dépôt :
+**Installation sur le VPS** (utilisateur `ubuntu`) :
 
 ```sh
+# Suspendre d'abord l'ancien watchdog (ne stoppe pas la migration).
+systemctl --user disable --now partage-fbx-watchdog.timer
 cd ~/partage-fbx-migration
 git pull --ff-only
 .venv/bin/python -m unittest discover -s tests -v
 mkdir -p ~/.config/systemd/user
 cp deploy/partage-fbx-watchdog.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
+
+# Recharger le moteur pour initialiser la nouvelle table d'activité.
+# Les parties S3 validées restent présentes.
+systemctl --user restart partage-fbx-migration.service
+
+# Avant toute réactivation du watchdog, vérifier la télémétrie.
+python3 deploy/migration_watchdog.py --dry-run
 systemctl --user enable --now partage-fbx-watchdog.timer
-systemctl --user list-timers --all | grep partage-fbx-watchdog
 ```
 
-Vérification manuelle sans redémarrage :
+Vérifier l'avancement réel et la méthode de reprise de la Freebox :
 
 ```sh
-python3 ~/partage-fbx-migration/deploy/migration_watchdog.py --dry-run
+journalctl --user -u partage-fbx-migration.service --since "15 minutes ago" --no-pager \
+  | grep -E 'HTTP 200 ignored Range|HTTP 206|S3 checkpoint|Transfer failed'
+journalctl --user -u partage-fbx-watchdog.service --since "15 minutes ago" --no-pager
 ```
 
-Historique des détections et redémarrages :
+Pour inspecter la phase et la dernière activité (sans noms de fichiers ni
+jetons d'API) :
 
 ```sh
-journalctl --user -u partage-fbx-watchdog.service --since today --no-pager
+sqlite3 ~/partage-freebox-migration/migration.sqlite3 \
+  "SELECT j.state,j.transferred,j.size,a.phase,a.source_bytes,a.updated_at FROM jobs j
+   LEFT JOIN transfer_activity a ON a.job_id=j.id WHERE j.state='running';"
 ```
 
-Désactiver le timer après la migration :
+Le script watchdog peut toujours être exécuté sans effet :
+`python3 deploy/migration_watchdog.py --dry-run`.
+
+Après migration :
 
 ```sh
 systemctl --user disable --now partage-fbx-watchdog.timer
 ```
 
-Si `FREEBOX_SECRET_DIR` a été personnalisé pour le service principal,
-configurer la même variable dans l'unité watchdog avant activation.
+Le serveur doit être l'unique worker Uvicorn et les fichiers privés / certificats
+Freebox restent en dehors de Git. Une Freebox qui ne prend pas en charge HTTP
+`Range` doit relire les octets antérieurs ; ce correctif évite les faux
+redémarrages, mais ne peut pas accélérer la relecture du réseau.
 
 ### Limites et sécurité
 
