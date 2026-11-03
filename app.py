@@ -1,4 +1,6 @@
 """Private SSH-tunnel-only migration UI. Run exactly one uvicorn worker."""
+import csv
+import io
 import logging
 import os
 import secrets
@@ -6,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -177,6 +179,29 @@ def queue(body: QueueRequest, x_migration_token: str | None = Header(None)):
 @app.get("/api/jobs")
 def jobs():
     return {"jobs": runtime["state"].jobs(), "stats": runtime["state"].stats()}
+
+
+@app.get("/api/report.csv")
+def export_report():
+    from freebox import decode_path
+    buffer=io.StringIO()
+    writer=csv.writer(buffer)
+    writer.writerow(["identifiant","source_freebox","nom","dossier_partage_id",
+                     "taille_octets","envoyes_octets","etat","tentatives",
+                     "erreur","cree","modifie"])
+    for job in runtime["state"].report():
+        try:
+            source=decode_path(job["source"])
+        except ValueError:
+            source="[chemin invalide]"
+        # These are private filenames, never publish this endpoint to the internet.
+        writer.writerow([job["id"],source,job["name"],job["folder_id"],
+                         job["size"],job["transferred"],job["state"],
+                         job["attempts"],job["error"] or "",
+                         job["created_at"],job["updated_at"]])
+    return Response(buffer.getvalue(),media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition":
+                             'attachment; filename="migration-freebox-rapport.csv"'})
 
 
 @app.post("/api/jobs/{job_id}/action")
