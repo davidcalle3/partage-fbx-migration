@@ -321,12 +321,21 @@ class State:
         with db(self.path) as con:
             return [dict(row) for row in con.execute("""SELECT id,stored_name,source,name,size,modified,folder_id,state FROM jobs""")]
 
+    def report(self):
+        with db(self.path) as con:
+            return [dict(row) for row in con.execute("""SELECT id,source,name,size,transferred,
+                modified,folder_id,stored_name,state,attempts,error,created_at,updated_at
+                FROM jobs ORDER BY created_at,id""")]
+
     def queue(self, jobs):
         with transaction(self.path) as con:
+            seen={(row["folder_id"], row["name"].casefold())
+                  for row in con.execute("SELECT folder_id,name FROM jobs")}
             for j in jobs:
-                for old in con.execute("SELECT name FROM jobs WHERE folder_id=?", (j["folder_id"],)):
-                    if old["name"].casefold() == j["name"].casefold():
-                        raise ValueError("Ce fichier est déjà dans la file de migration : " + j["name"])
+                key=(j["folder_id"],j["name"].casefold())
+                if key in seen:
+                    raise ValueError("Ce fichier est déjà dans la file de migration : " + j["name"])
+                seen.add(key)
                 con.execute("""INSERT INTO jobs
                     (id,stored_name,source,name,size,modified,folder_id,state,created_at,updated_at)
                     VALUES (?,?,?,?,?,?,?,'queued',?,?)""",
