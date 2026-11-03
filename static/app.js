@@ -2,6 +2,22 @@
 
 const $ = (id) => document.getElementById(id);
 const state = {csrf:"", partitions:[], destinations:[], stack:[], selection:new Map(), preview:null, busy:false, listing:0, rates:new Map()};
+let selectionSave = Promise.resolve();
+
+function persistSelection() {
+  const snapshot = {
+    items:[...state.selection.values()].map(item=>({
+      path:item.path,name:item.name,type:item.type,size:item.size || 0
+    })),
+    target:$("destination").value || "root"
+  };
+  // Serialize saves to prevent a slow earlier response from overwriting
+  // a newer selection. All data is stored on the VPS, not localStorage.
+  selectionSave = selectionSave.catch(()=>{}).then(()=>api("/api/selection",snapshot));
+  selectionSave.catch(err=>notice("Sauvegarde de la sélection impossible : " + err.message));
+  return selectionSave;
+}
+
 const fmt = (size) => {
   if (!size) return "0 o";
   const units = ["o","Kio","Mio","Gio","Tio"];
@@ -56,7 +72,7 @@ function selectedUI() {
     item.append(node("span", "", (entry.type === "dir" ? "📁 " : "📄 ") + entry.name));
     const remove = node("button","","×");
     remove.type = "button";remove.title = "Retirer de la sélection";
-    remove.addEventListener("click",()=>{state.selection.delete(path);selectedUI();invalidate();renderEntries();});
+    remove.addEventListener("click",()=>{state.selection.delete(path);selectedUI();invalidate();renderEntries();persistSelection();});
     item.append(remove);list.append(item);
   }
   invalidate();
@@ -80,6 +96,7 @@ function renderEntries() {
       if (checkbox.checked) state.selection.set(entry.path,entry);
       else state.selection.delete(entry.path);
       selectedUI();
+      persistSelection();
     });
     first.append(checkbox);
     const file = node(entry.type === "dir" ? "button" : "div",
@@ -184,11 +201,17 @@ async function queue() {
   notice("");
   setBusy(true);
   try {
+    await selectionSave;
     const data = await api("/api/queue",{plan_id:state.preview});
     state.selection.clear();
     selectedUI();
     renderEntries();
-    notice(data.queued + " fichier(s) ajouté(s) à la file de transfert. La copie démarre automatiquement.");
+    const skipped = data.skipped || {};
+    notice(data.queued + " nouveau(x) fichier(s) ajouté(s)." +
+      ((skipped.done || skipped.pending) ? " Déjà migrés : " + (skipped.done || 0) +
+       " ; déjà en cours ou en attente : " + (skipped.pending || 0) + "." : "") +
+      " Les copies démarrent automatiquement.");
+    await persistSelection();
     await refresh();
   } catch(err) {notice(err.message);}
   finally {setBusy(false);}
@@ -246,8 +269,13 @@ function renderJobs(data) {
     if (!previous || previous.bytes !== job.transferred) {
       state.rates.set(job.id,{bytes:job.transferred,time:tick});
     }
+    if (job.state === "queued" && job.retry_at && job.retry_at*1000 > tick) {
+      const remaining = Math.ceil((job.retry_at*1000 - tick)/1000);
+      detail += " · Nouvelle tentative dans " + remaining + " s";
+    }
     head.append(node("div","job-meta",detail));
-    el.append(head,node("span","status " + job.state,statusName(job.state)));
+    const recovering = job.state === "queued" && job.retry_at && job.retry_at*1000 > tick;
+    el.append(head,node("span","status " + job.state,recovering ? "Reconnexion automatique" : statusName(job.state)));
     const progress = node("div","progress");
     const bar = node("div");
     bar.style.width = (job.size ? Math.min(100,100*job.transferred/job.size) : job.state === "done" ? 100 : 0) + "%";
@@ -282,6 +310,15 @@ async function boot() {
       option.value = p.path;select.append(option);
     }
     targetOptions();
+    const saved = await api("/api/selection");
+    if (state.destinations.some(f=>f.id === saved.target)) {
+      $("destination").value = saved.target;
+    }
+    for (const item of (saved.items || [])) {
+      if (item && item.path && item.name && ["dir","file"].includes(item.type))
+        state.selection.set(item.path,item);
+    }
+    selectedUI();
     if (state.partitions.length) {
       await openFolder({name:state.partitions[0].name,path:state.partitions[0].path},true);
     }
@@ -290,8 +327,8 @@ async function boot() {
       if(part) openFolder({name:part.name,path:part.path},true);
     });
     $("back").addEventListener("click",goBack);
-    $("clear").addEventListener("click",()=>{state.selection.clear();selectedUI();renderEntries();});
-    $("destination").addEventListener("change",invalidate);
+    $("clear").addEventListener("click",()=>{state.selection.clear();selectedUI();renderEntries();persistSelection();});
+    $("destination").addEventListener("change",()=>{invalidate();persistSelection();});
     $("preview").addEventListener("click",preview);
     $("queue").addEventListener("click",queue);
     $("refresh").addEventListener("click",refresh);
