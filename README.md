@@ -4,6 +4,82 @@ Outil temporaire, **indépendant** du site Partage et de son encodeur : navigati
 
 **La source Freebox n'est jamais modifiée.** La seule écriture dans Partage est la création des dossiers sélectionnés et la publication des fichiers **après** vérification de leur présence et de leur taille dans S3. Aucun fichier média complet n'est conservé sur le VPS. Les vidéos importées suivent ensuite le traitement vidéo normal de Partage.
 
+## Accès direct HTTPS, sans tunnel SSH (recommandé)
+
+L'interface est désormais protégée par une **authentification HTTP Basic dédiée**
+avec mot de passe aléatoire et hash PBKDF2 conservé dans le répertoire privé
+`~/partage-freebox-migration`. **Ne jamais exposer directement le port HTTP 8791
+sur Internet** : les identifiants HTTP Basic doivent obligatoirement transiter
+sur une connexion HTTPS valide.
+
+Le service Uvicorn reste lié à `127.0.0.1:8791`. Le reverse proxy HTTPS qui
+sert déjà Partage publie seulement le chemin `/fbx-migration/`.
+Les mêmes URL fonctionnent sur mobile et ordinateur, sans tunnel SSH.
+
+### 1. Mettre à jour l'outil et créer le mot de passe privé
+
+Sur le VPS :
+
+```sh
+cd ~/partage-fbx-migration
+git pull --ff-only
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m http_auth --create
+```
+
+**Enregistrer le mot de passe affiché dans un gestionnaire** : il n'est pas
+possible de récupérer sa valeur depuis le fichier de hash. Le programme
+refuse de remplacer un mot de passe existant et refuse de démarrer sans
+un fichier d'identifiants correct et protégé par chmod 600.
+Aucun identifiant n'est écrit dans GitHub ni dans le `.env` de Partage.
+
+Si l'application tournait avant la mise à jour, la redémarrer **après**
+avoir créé le mot de passe :
+
+```sh
+systemctl --user restart partage-fbx-migration.service
+systemctl --user status partage-fbx-migration.service --no-pager
+```
+
+Si elle tourne dans un terminal, arrêter ce processus avec Ctrl+C, puis
+relancer la commande Uvicorn habituelle. **Ne pas lancer deux instances**.
+
+### 2. Connecter le chemin à l'HTTPS existant
+
+**Nginx** : ajouter les deux blocs `location` de
+`deploy/nginx-https-location.conf` **à l'intérieur du bloc server qui écoute
+déjà sur 443 pour Partage**, sans modifier le bloc sur 80 ni les certificats.
+La directive `proxy_pass http://127.0.0.1:8791/;`, avec son slash final,
+retire le préfixe du chemin. Ne pas utiliser un vhost séparé non protégé.
+
+```sh
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**Caddy** : ajouter les directives de `deploy/caddy-https-site-block.caddy`
+au bloc du site HTTPS Partage existant, avant son éventuel
+`handle` générique. Ne pas remplacer tout le Caddyfile.
+
+```sh
+sudo caddy validate --config /etc/caddy/Caddyfile &&
+sudo systemctl reload caddy
+```
+
+Après validation, ouvrir **https://DOMAINE_OU_IP_EXISTANT_DE_PARTAGE/fbx-migration/**.
+Le navigateur demande l'identifiant `migration` et le mot de passe privé
+généré à l'étape 1. Un HTTPS existant avec certificat non approuvé continuera
+à générer un avertissement de certificat ; cette configuration ne le corrige pas.
+
+**Important :** un accès SSH ponctuel reste utile pour administrer le VPS,
+mais **aucun tunnel SSH permanent n'est nécessaire pour utiliser l'interface**.
+Ne pas ouvrir le port 8791 au firewall ni changer `--host 127.0.0.1`.
+
+### Désactivation de l'accès public après la migration
+
+Retirer uniquement les blocs ajoutés au vhost Nginx ou Caddy, revalider la
+configuration, recharger le proxy, puis arrêter le service utilisateur.
+Ne pas modifier les originaux Freebox, ni le `.env`, ni les volumes Partage.
+
 ## Installation sur le VPS
 
 Dépôt déjà cloné dans `/home/ubuntu/partage-fbx-migration`. Les certificats Freebox et l'autorisation sont **déjà présents** dans `/home/ubuntu/partage-freebox-migration`. Ne copiez pas ces secrets dans le dépôt GitHub.
@@ -50,13 +126,13 @@ Dépôt déjà cloné dans `/home/ubuntu/partage-fbx-migration`. Les certificats
 
    Au démarrage, le programme vérifie le certificat, l'UID Freebox, les droits Explorateur, le schéma SQLite Partage, les identifiants S3 et l'accès au verrou d'unique worker. **Il ne modifie ni le `.env` ni la configuration Docker**. Les transferts reprendront à la prochaine exécution si le programme s'arrête.
 
-5. Sur votre ordinateur (dans **un second terminal**, pas sur le VPS), ouvrir le tunnel SSH :
+5. Alternative facultative (accès local sans reverse proxy) : dans un second terminal sur votre ordinateur, ouvrir le tunnel SSH :
 
    ```sh
    ssh -N -L 8791:127.0.0.1:8791 ubuntu@IP_DU_VPS
    ```
 
-   Puis ouvrir **http://127.0.0.1:8791** dans votre navigateur. Le port **8791 n'est pas exposé publiquement**. Ne pas ouvrir le pare-feu ou configurer nginx pour cet outil : son interface n'a pas de connexion utilisateur, car elle est volontairement limitée au tunnel SSH.
+   Puis ouvrir **http://127.0.0.1:8791** dans votre navigateur (l'authentification dédiée reste exigée). Le port **8791 n'est pas exposé publiquement**. L'accès direct par le proxy HTTPS existant est décrit plus haut ; il nécessite l'authentification dédiée. Ne jamais exposer le service en HTTP public.
 
 Pour les copies de plusieurs heures, lancer le serveur dans une session `tmux` ou un service système dédié plutôt que dans une fenêtre SSH susceptible de se fermer. Si l'interface redémarre, les tâches sont récupérées depuis `~/partage-freebox-migration/migration.sqlite3`.
 
