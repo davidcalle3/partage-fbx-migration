@@ -12,3 +12,6 @@ config.json
 *.db
 *.log
 .pytest_cache/
+
+# Browser authentication must remain private even if copied here by mistake
+http-auth.json
