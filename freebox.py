@@ -208,7 +208,7 @@ class Freebox:
 
     def download(self, encoded, offset=0):
         self.allowed(encoded)
-        endpoint = self.prefix + "/fs/download/" + urllib.parse.quote(encoded, safe="")
+        endpoint = self.prefix + "/dl/" + urllib.parse.quote(encoded, safe="")
         for retry in range(2):
             with self._lock:
                 if not self._token:
