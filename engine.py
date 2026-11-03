@@ -116,8 +116,16 @@ class Partage:
                 "SELECT id,parent_id,name FROM folders ORDER BY name COLLATE NOCASE")]
         return rows
 
-    def prepare(self, manifest, target):
-        """All folder operations + collision detection happen in one Partage DB transaction."""
+    def prepare(self, manifest, target, existing_jobs=()):
+        """Avoid only PROVEN duplicates from this migration, never just matching names.
+
+        An existing Partage file not imported by this tool remains a hard conflict.
+        Previous errored or paused transfers must be resumed, not duplicated.
+        """
+        by_name = {}
+        for old in existing_jobs:
+            by_name[(old["folder_id"], old["name"].casefold())] = old
+        skipped = {"done": 0, "pending": 0}
         dirs = {tuple()}; files = manifest["files"]
         for f in manifest["folders"]:
             pieces = tuple(f)
@@ -155,15 +163,35 @@ class Partage:
                 parent = folders[tuple(f["parts"][:-1])]
                 name = name_ok(f["parts"][-1])
                 key = (parent, name.casefold())
-                if key in seen or _same_name(con, parent, name):
-                    raise ValueError("Conflit de nom dans Partage : " + name)
+                if key in seen:
+                    raise ValueError("Deux fichiers ont le même nom dans la sélection : " + name)
                 seen.add(key)
+                previous = by_name.get(key)
+                if previous:
+                    same_source = (
+                        previous["source"] == f["source"]
+                        and int(previous["size"]) == int(f["size"])
+                        and previous["modified"] == json.dumps(f["modified"])
+                    )
+                    if not same_source:
+                        raise ValueError("Conflit avec une migration antérieure : " + name)
+                    if previous["state"] == "done":
+                        published=con.execute("""SELECT id,folder_id,name,stored_name,size,storage_backend
+                            FROM files WHERE id=?""",(previous["id"],)).fetchone()
+                        if not published or published["stored_name"] != previous["stored_name"] or published["folder_id"] != parent or published["name"].casefold() != name.casefold() or int(published["size"]) != int(f["size"]) or published["storage_backend"] != "s3":
+                            raise ValueError("Un ancien fichier migré est introuvable dans Partage : " + name)
+                        skipped["done"] += 1
+                        continue
+                    skipped["pending"] += 1
+                    continue
+                if _same_name(con, parent, name):
+                    raise ValueError("Un autre fichier occupe déjà ce nom dans Partage : " + name)
                 mapped.append({
                     "id": uuid.uuid4().hex, "stored_name": uuid.uuid4().hex,
                     "source": f["source"], "size": f["size"], "modified": f["modified"],
                     "folder_id": parent, "name": name,
                 })
-        return mapped
+        return mapped, skipped
 
     def key(self, job):
         return "media/" + job["stored_name"]
@@ -281,6 +309,10 @@ class State:
                 raise ValueError("Prévisualisation expirée ; recommence")
             con.execute("DELETE FROM plans WHERE id=?", (pid,))
             return json.loads(row["manifest"]), row["target"]
+
+    def known(self):
+        with db(self.path) as con:
+            return [dict(row) for row in con.execute("""SELECT id,stored_name,source,name,size,modified,folder_id,state FROM jobs""")]
 
     def queue(self, jobs):
         with transaction(self.path) as con:
