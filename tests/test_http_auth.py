@@ -30,7 +30,7 @@ class HttpBasicAuthTests(unittest.TestCase):
         self.assertFalse(auth.verify(""))
         self.assertFalse(auth.verify("Bearer invalid"))
         self.assertFalse(auth.verify("Basic @@@@"))
-        self.assertFalse(auth.verify("Basic " + base64.b64encode(b"not-colon").decode())
+        self.assertFalse(auth.verify("Basic " + base64.b64encode(b"not-colon").decode()))
 
     def test_refuses_to_overwrite_existing_credentials(self):
         generate(self.filename)
