@@ -24,8 +24,8 @@ Dépôt déjà cloné dans `/home/ubuntu/partage-fbx-migration`. Les certificats
    ```sh
    cat > ~/partage-freebox-migration/config.json <<'EOF'
    {
-     "host": "https://b50xzsc1.fbxos.fr:56055",
-     "uid": "a1cb81bbd91049f153507557a6cc5d55"
+     "host": "https://ADRESSE_FREEBOX:PORT",
+     "uid": "UID_RETOURNE_PAR_API_VERSION"
    }
    EOF
    chmod 600 ~/partage-freebox-migration/config.json
@@ -53,7 +53,7 @@ Dépôt déjà cloné dans `/home/ubuntu/partage-fbx-migration`. Les certificats
 5. Sur votre ordinateur (dans **un second terminal**, pas sur le VPS), ouvrir le tunnel SSH :
 
    ```sh
-   ssh -N -L 8791:127.0.0.1:8791 ubuntu@137.74.169.214
+   ssh -N -L 8791:127.0.0.1:8791 ubuntu@IP_DU_VPS
    ```
 
    Puis ouvrir **http://127.0.0.1:8791** dans votre navigateur. Le port **8791 n'est pas exposé publiquement**. Ne pas ouvrir le pare-feu ou configurer nginx pour cet outil : son interface n'a pas de connexion utilisateur, car elle est volontairement limitée au tunnel SSH.
