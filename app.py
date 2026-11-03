@@ -1,4 +1,4 @@
-"""Private SSH-tunnel-only migration UI. Run exactly one uvicorn worker."""
+"""Private authenticated migration UI behind existing HTTPS reverse proxy."""
 import csv
 import io
 import logging
@@ -8,13 +8,14 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from engine import Partage, State, Worker, manifest_from_selection
 from freebox import Freebox
+from http_auth import BasicAuth
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 HOME = Path(__file__).resolve().parent
@@ -25,12 +26,14 @@ queue_lock = threading.Lock()  # serialize two browser confirmations on the same
 
 @asynccontextmanager
 async def lifespan(app):
+    # Fail closed before any migration worker starts or external requests arrive.
+    auth = BasicAuth()
     state = State()
     freebox = Freebox()
     partage = Partage()
     worker = Worker(freebox, partage, state)
     worker.start()
-    runtime.update(state=state, freebox=freebox, partage=partage, worker=worker)
+    runtime.update(auth=auth, state=state, freebox=freebox, partage=partage, worker=worker)
     try:
         yield
     finally:
@@ -44,8 +47,21 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost
 
 
 @app.middleware("http")
-async def security_headers(request, call_next):
-    response = await call_next(request)
+async def security_headers(request: Request, call_next):
+    if request.url.path != "/health":
+        auth = runtime.get("auth")
+        if auth is None:
+            response = JSONResponse({"detail":"Application indisponible"}, status_code=503)
+        elif not auth.verify(request.headers.get("authorization", "")):
+            response = JSONResponse(
+                {"detail":"Authentification requise"},
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="Partage Migration", charset="UTF-8"'},
+            )
+        else:
+            response = await call_next(request)
+    else:
+        response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
