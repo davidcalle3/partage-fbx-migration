@@ -1,6 +1,9 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+// The application is reachable at / locally or under /fbx-migration/ via HTTPS.
+// Keep all API requests on that same origin and mount path.
+const API_BASE = new URL(".", window.location.href).pathname.replace(/\/$/, "");
 const state = {csrf:"", partitions:[], destinations:[], stack:[], selection:new Map(), preview:null, busy:false, listing:0, rates:new Map()};
 let selectionSave = Promise.resolve();
 
@@ -33,7 +36,7 @@ async function api(url, body) {
     options.headers = {"Content-Type":"application/json", "X-Migration-Token":state.csrf};
     options.body = JSON.stringify(body);
   }
-  const result = await fetch(url,options);
+  const result = await fetch(API_BASE + url, options);
   let data;
   try {data = await result.json();}
   catch (_) {throw new Error("Réponse du serveur invalide");}
