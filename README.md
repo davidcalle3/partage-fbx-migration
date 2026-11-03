@@ -65,16 +65,59 @@ Pour les copies de plusieurs heures, lancer le serveur dans une session `tmux` o
 1. Choisir un disque et parcourir ses dossiers ; cocher les fichiers/dossiers à migrer.
 2. Choisir le dossier cible dans la hiérarchie Partage ; la structure des dossiers cochés est conservée.
 3. Cliquer sur **Calculer la sélection** pour construire le manifeste complet (taille totale, nombre de fichiers et exemples), puis **Lancer les transferts**.
-4. Suivre chaque fichier, le mettre en pause, reprendre ou réessayer les échecs. Les transferts sont séquentiels afin de ne pas saturer la Freebox.
+4. Suivre chaque fichier. Les erreurs réseau déclenchent automatiquement une nouvelle tentative après 30 s, 1 min, 2 min, puis 5 min au maximum ; les fichiers défectueux ou sources modifiées demandent une action manuelle. Les transferts sont séquentiels afin de ne pas saturer la Freebox.
 5. Pour le premier essai, **choisir un tout petit fichier**, confirmer son téléchargement et sa visibilité dans Partage avant d'importer un gros dossier.
 
-Les fichiers de même nom dans le dossier de destination ne sont **jamais écrasés** : une collision bloque la publication. L'outil refuse également les liens symboliques et les sélections qui sortent des partitions montées.
+La sélection courante (cases cochées et destination) est **enregistrée sur le VPS** et restaurée après fermeture/rafraîchissement du navigateur. Elle est réinitialisée après confirmation de la mise en file.
+
+Les fichiers déjà transférés par **cette migration** sont ignorés seulement si la provenance, la taille, la date, le dossier cible et l'enregistrement du catalogue concordent. Les tâches en cours, en pause ou en erreur ne sont pas dupliquées ; elles restent récupérables dans le suivi. Les fichiers de même nom provenant d'ailleurs ne sont **jamais écrasés** : une collision bloque la préparation. L'outil refuse également les liens symboliques et les sélections qui sortent des partitions montées.
+
+La zone **Transferts vers S3** fournit un lien **Rapport CSV** contenant l'ensemble des tâches historiques et leurs statuts, sans la limite de 500 lignes de la vue à l'écran.
 
 ### Reprise
 
 La base temporaire stocke, pour chaque fichier, un objet S3 unique, son upload multipart, les parties validées et les octets déjà envoyés. Sur redémarrage, le worker récupère les parties réellement présentes sur S3 avant de continuer ; la Freebox peut ignorer `Range`, dans ce cas les octets déjà transférés sont relus puis ignorés en flux, sans fichier temporaire. Si un fichier source a changé de taille/date, le transfert s'arrête plutôt que mélanger deux versions.
 
 Le système vérifie la **taille de l'objet publié dans S3** avant insertion en base Partage. Il ne calcule pas actuellement un hash cryptographique complet Freebox↔S3 : le contrôle garantit la longueur et les checkpoints S3, pas une preuve d'identité bit à bit.
+
+### Rapport de vérification avant retrait de la Freebox
+
+Après la fin des copies, exécuter une réconciliation **en lecture seule** entre la base de migration, le catalogue Partage et chaque objet S3 :
+
+```sh
+cd ~/partage-fbx-migration
+PARTAGE_ENV_FILE=/opt/partage/.env .venv/bin/python audit.py
+```
+
+Changer le chemin de `PARTAGE_ENV_FILE` uniquement si le `.env` existant est ailleurs. Un rapport CSV privé `~/partage-freebox-migration/audit-migration-*.csv` est créé, avec les états `valide`, `incomplet`, `absent_du_catalogue`, `catalogue_incoherent` et `taille_s3_incorrecte`. Corriger les anomalies avant de débrancher la Freebox.
+
+Le contrôle compare la présence et la **taille**, mais pas un hash cryptographique de bout en bout. Il ne permet pas à lui seul d'affirmer une identité binaire parfaite.
+
+### Redémarrage automatique du VPS (recommandé pour une migration longue)
+
+1. Arrêter d'abord le serveur Uvicorn démarré manuellement sur le port 8791.
+2. Adapter **uniquement** le chemin `PARTAGE_ENV_FILE` du modèle si nécessaire.
+3. Installer le service utilisateur :
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp ~/partage-fbx-migration/deploy/partage-fbx-migration.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now partage-fbx-migration.service
+systemctl --user status partage-fbx-migration.service --no-pager
+```
+
+Pour permettre au service utilisateur de redémarrer après un reboot même sans connexion SSH, activer une seule fois le linger (nécessite sudo) :
+
+```sh
+sudo loginctl enable-linger ubuntu
+```
+
+L'interface reste disponible **uniquement par le tunnel SSH**. Le service n'écoute que sur `127.0.0.1:8791`. Les jobs et checkpoints sont conservés dans la base privée. Pour arrêter définitivement après migration :
+
+```sh
+systemctl --user disable --now partage-fbx-migration.service
+```
 
 ### Limites et sécurité
 
