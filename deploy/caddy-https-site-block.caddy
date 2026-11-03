@@ -1,0 +1,13 @@
+# Insert inside the EXISTING HTTPS site block for Partage.
+# When the site uses a generic 'handle { reverse_proxy ... }', put
+# this alongside that handle, not inside it.
+#
+# Do not expose localhost:8791 directly or create a new HTTP listener.
+
+redir /fbx-migration /fbx-migration/ 308
+
+handle_path /fbx-migration/* {
+    reverse_proxy 127.0.0.1:8791 {
+        header_up Host 127.0.0.1
+    }
+}
