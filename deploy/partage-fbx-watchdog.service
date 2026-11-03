@@ -1,0 +1,9 @@
+[Unit]
+Description=Check Freebox-to-Partage migration transfer progress
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/ubuntu/partage-fbx-migration/deploy/migration_watchdog.py
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
