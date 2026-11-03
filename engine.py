@@ -230,9 +230,40 @@ class State:
                     etag TEXT NOT NULL, size INTEGER NOT NULL,
                     PRIMARY KEY(job_id,number)
                 );
+                CREATE TABLE IF NOT EXISTS browser_selection (
+                    id INTEGER PRIMARY KEY CHECK(id=1),
+                    selection_json TEXT NOT NULL, destination TEXT NOT NULL
+                );
             """)
+            columns = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}
+            if "attempts" not in columns:
+                con.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+            if "retry_at" not in columns:
+                con.execute("ALTER TABLE jobs ADD COLUMN retry_at REAL NOT NULL DEFAULT 0")
             con.commit()
         os.chmod(self.path, 0o600)
+
+    def selection(self):
+        with db(self.path) as con:
+            row = con.execute("SELECT selection_json,destination FROM browser_selection WHERE id=1").fetchone()
+        return ({"items":json.loads(row["selection_json"]), "target":row["destination"]}
+                if row else {"items":[], "target":"root"})
+
+    def save_selection(self, items, target):
+        if not isinstance(items,list) or len(items)>200 or not isinstance(target,str):
+            raise ValueError("Sélection invalide")
+        clean=[]
+        for entry in items:
+            if not isinstance(entry,dict) or not all(k in entry for k in ("path","name","type")):
+                raise ValueError("Élément de sélection invalide")
+            if entry["type"] not in ("file","dir") or not name_ok(entry["name"]):
+                raise ValueError("Élément de sélection invalide")
+            clean.append({k:entry.get(k) for k in ("path","name","type","size")})
+        with transaction(self.path) as con:
+            con.execute("""INSERT INTO browser_selection(id,selection_json,destination)
+                VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET
+                selection_json=excluded.selection_json,destination=excluded.destination""",
+                (json.dumps(clean,ensure_ascii=False),target))
 
     def plan(self, manifest, target):
         pid = uuid.uuid4().hex
@@ -267,7 +298,7 @@ class State:
         with db(self.path) as con:
             return [dict(r) for r in con.execute(
                 """SELECT id,name,size,transferred,state,error,updated_at
-                   FROM jobs ORDER BY created_at,id DESC LIMIT 500""")]
+                   ,retry_at,attempts FROM jobs ORDER BY created_at DESC,id DESC LIMIT 500""")]
 
     def stats(self):
         with db(self.path) as con:
@@ -284,7 +315,8 @@ class State:
 
     def next_job(self):
         with transaction(self.path) as con:
-            row = con.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY created_at,id LIMIT 1").fetchone()
+            row = con.execute("""SELECT * FROM jobs WHERE state='queued'
+                AND retry_at<=? ORDER BY created_at,id LIMIT 1""",(time.time(),)).fetchone()
             if row:
                 con.execute("UPDATE jobs SET state='running',error=NULL,updated_at=? WHERE id=?",
                             (now(),row["id"]))
@@ -314,6 +346,17 @@ class State:
             transferred = con.execute("SELECT COALESCE(SUM(size),0) FROM parts WHERE job_id=?",(jid,)).fetchone()[0]
             con.execute("UPDATE jobs SET transferred=?,updated_at=? WHERE id=?",(transferred,now(),jid))
 
+    def retry_later(self, jid, message):
+        with transaction(self.path) as con:
+            row=con.execute("SELECT attempts,state FROM jobs WHERE id=?",(jid,)).fetchone()
+            if not row or row["state"]!="running":
+                return
+            attempts=int(row["attempts"])+1
+            delay=min(300,30*2**min(attempts-1,4))
+            con.execute("""UPDATE jobs SET state='queued',attempts=?,retry_at=?,
+                error=?,updated_at=? WHERE id=? AND state='running'""",
+                (attempts,time.time()+delay,message[:180],now(),jid))
+
     def recover(self):
         with transaction(self.path) as con:
             con.execute("UPDATE jobs SET state='queued',updated_at=? WHERE state='running'", (now(),))
@@ -332,8 +375,10 @@ class State:
                 state = "queued"
             else:
                 raise ValueError("Action impossible dans cet état")
-            con.execute("UPDATE jobs SET state=?,error=NULL,updated_at=? WHERE id=?",
-                        (state,now(),jid))
+            con.execute("""UPDATE jobs SET state=?,retry_at=0,
+                            attempts=CASE WHEN ?='retry' THEN 0 ELSE attempts END,
+                            error=NULL,updated_at=? WHERE id=?""",
+                        (state,action,now(),jid))
 
 
 def manifest_from_selection(freebox, paths):
