@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import secrets
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,6 +20,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 HOME = Path(__file__).resolve().parent
 token = secrets.token_urlsafe(32)
 runtime = {}
+queue_lock = threading.Lock()  # serialize two browser confirmations on the same catalog
 
 
 @asynccontextmanager
@@ -165,12 +167,13 @@ def preview(body: Selection, x_migration_token: str | None = Header(None)):
 def queue(body: QueueRequest, x_migration_token: str | None = Header(None)):
     guard(x_migration_token)
     try:
-        manifest, target = runtime["state"].take_plan(body.plan_id)
-        mapped, skipped = runtime["partage"].prepare(
-            manifest, target, runtime["state"].known())
-        runtime["state"].queue(mapped)
-        # Selection is cleared only after durable queue creation.
-        runtime["state"].save_selection([], target)
+        with queue_lock:
+            manifest, target = runtime["state"].take_plan(body.plan_id)
+            mapped, skipped = runtime["partage"].prepare(
+                manifest, target, runtime["state"].known())
+            runtime["state"].queue(mapped)
+            # Selection is cleared only after durable queue creation.
+            runtime["state"].save_selection([], target)
         return {"queued": len(mapped), "skipped": skipped}
     except Exception as exc:
         fail(exc)
