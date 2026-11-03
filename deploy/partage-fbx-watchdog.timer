@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Freebox-to-Partage transfer progress every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=partage-fbx-watchdog.service
+
+[Install]
+WantedBy=timers.target
